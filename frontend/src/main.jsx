@@ -1,412 +1,642 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
+import Header from './components/Header.jsx';
+import AuthenticClinicalGauge from './components/AuthenticClinicalGauge.jsx';
+import RadialCardiovascularProfile from './components/RadialCardiovascularProfile.jsx';
+import ShapDivergingChart from './components/ShapDivergingChart.jsx';
+import HealthBulletIndicators from './components/HealthBulletIndicators.jsx';
+import BenchmarkDumbbellChart from './components/BenchmarkDumbbellChart.jsx';
+import LiveTelemetryStream from './components/LiveTelemetryStream.jsx';
+import WhatIfSimulatorModal from './components/WhatIfSimulatorModal.jsx';
+import ModelAnalyticsModal from './components/ModelAnalyticsModal.jsx';
+import ModelTestingModal from './components/ModelTestingModal.jsx';
+import AssessmentSequenceModal from './components/AssessmentSequenceModal.jsx';
+import PatientRecordModal from './components/PatientRecordModal.jsx';
+import ClinicalGuidelinesModal from './components/ClinicalGuidelinesModal.jsx';
+import NewPatientModal from './components/NewPatientModal.jsx';
+import HealthIndicatorDetailModal from './components/HealthIndicatorDetailModal.jsx';
+
 const API = 'http://localhost:8000';
-const DEMO_PATIENT = { patient_id: 'DEMO-001', age_years: 54, gender: 2, height: 168, weight: 78, ap_hi: 145, ap_lo: 92, cholesterol: 2, gluc: 1, smoke: 0, alco: 0, active: 1 };
 
-function Gauge({ score, category, model_used }) {
-  const c = 2 * Math.PI * 56;
-  return (
-    <div className="risk-main">
-      <div className="gauge">
-        <svg viewBox="0 0 140 140">
-          <circle cx="70" cy="70" r="56" className="track" />
-          <circle cx="70" cy="70" r="56" className={'arc ' + category.toLowerCase()} style={{ strokeDasharray: c, strokeDashoffset: c * (1 - score / 100) }} />
-        </svg>
-        <div className="gauge-center">
-          <b>{score.toFixed(1)}%</b>
-          <span>{category}</span>
-        </div>
-      </div>
-      <div>
-        <p className="eyebrow">Assessed Risk</p>
-        <h3 style={{fontSize: '16px', margin: '4px 0 8px', color: '#1A2733'}}>Model: {model_used}</h3>
-        <p className="sub">The predicted probability of cardiovascular disease occurrence is {score.toFixed(1)}%, placing this patient in the {category} risk category.</p>
-        
-        {score >= 35 && (
-          <ul className="attention-list">
-            <li>Clinical attention recommended based on actionable risk drivers.</li>
-          </ul>
-        )}
-      </div>
-    </div>
-  );
-}
+const DEFAULT_PATIENT = {
+  patient_id: 'DEMO-001',
+  age_years: 54,
+  gender: 2, // 2: Male, 1: Female
+  height: 168,
+  weight: 78,
+  ap_hi: 145,
+  ap_lo: 92,
+  cholesterol: 2,
+  gluc: 1,
+  smoke: 0,
+  alco: 0,
+  active: 1
+};
 
-function ShapDivergingChart({ data }) {
-  const allFactors = [...(data?.modifiable || []), ...(data?.non_modifiable || [])];
-  const maxAbs = Math.max(...allFactors.map(x => Math.abs(x.contribution)), 0.01);
+export default function App() {
+  const [patientsList, setPatientsList] = useState([DEFAULT_PATIENT]);
+  const [patient, setPatient] = useState(DEFAULT_PATIENT);
+  const [result, setResult] = useState(null);
+  const [modelInfo, setModelInfo] = useState(null);
+  const [isAssessing, setIsAssessing] = useState(false);
+  const [isSwitchingPatient, setIsSwitchingPatient] = useState(false);
+  const [activeNav, setActiveNav] = useState('dashboard');
+  const [assessedTime, setAssessedTime] = useState('13:52:42');
+  const [assessedDate, setAssessedDate] = useState('10 Apr 2025');
 
-  const renderSection = (factors, title, muted = false) => (
-    <div className={`shap-section ${muted ? 'muted' : ''}`}>
-      <div className="shap-section-title">{title}</div>
-      {factors.map(x => {
-        const width = (Math.abs(x.contribution) / maxAbs) * 100;
-        const isRisk = x.direction === 'risk_increasing';
-        return (
-          <div className="shap-row" key={x.feature}>
-            <div className="shap-label">
-              <span>{x.label} <small style={{color: '#94A6B8', marginLeft: '4px'}}>({x.value})</small></span>
-              <span className="shap-val">{(x.contribution > 0 ? '+' : '')}{x.contribution.toFixed(2)}</span>
-            </div>
-            <div className="shap-bar-area">
-              {isRisk ? (
-                <div style={{width: '50%', display: 'flex', justifyContent: 'flex-start'}}>
-                  <div className="shap-bar risk" style={{width: `${width}%`}}></div>
-                </div>
-              ) : (
-                <div style={{width: '50%', display: 'flex', justifyContent: 'flex-end'}}>
-                  <div className="shap-bar protective" style={{width: `${width}%`}}></div>
-                </div>
-              )}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
+  // Cross-visualization factor synchronization (Requirements 8, 26)
+  const [activeHoverFactor, setActiveHoverFactor] = useState(null);
+  const [selectedFactor, setSelectedFactor] = useState(null);
+  const [selectedIndicator, setSelectedIndicator] = useState(null);
 
-  return (
-    <div className="shap-container">
-      <div className="shap-axis">
-        <div className="neg">← Protective</div>
-        <div className="pos">Risk Increase →</div>
-      </div>
-      <div className="shap-zero-line"></div>
-      
-      {renderSection(data?.modifiable || [], "Actionable Modifiable Factors")}
-      {renderSection(data?.non_modifiable || [], "Baseline Non-Modifiable Factors", true)}
-    </div>
-  );
-}
+  // Modals state
+  const [whatIfOpen, setWhatIfOpen] = useState(false);
+  const [modelModalOpen, setModelModalOpen] = useState(false);
+  const [modelTestingOpen, setModelTestingOpen] = useState(false);
+  const [patientModalOpen, setPatientModalOpen] = useState(false);
+  const [guidelinesModalOpen, setGuidelinesModalOpen] = useState(false);
+  const [newPatientOpen, setNewPatientOpen] = useState(false);
 
-function HealthProfile({ patient, indicators }) {
-  return (
-    <div className="health-metrics">
-      <div className={`health-chip ${(patient.ap_hi > 120 || patient.ap_lo > 80) ? 'attn' : ''}`}>
-        <small>Blood Pressure</small>
-        <b>{indicators.blood_pressure}</b>
-      </div>
-      <div className={`health-chip ${indicators.bmi > 25 ? 'attn' : ''}`}>
-        <small>BMI</small>
-        <b>{indicators.bmi.toFixed(1)}</b>
-      </div>
-      <div className={`health-chip ${patient.cholesterol > 1 ? 'attn' : ''}`}>
-        <small>Cholesterol</small>
-        <b>{indicators.cholesterol}</b>
-      </div>
-      <div className={`health-chip ${patient.gluc > 1 ? 'attn' : ''}`}>
-        <small>Glucose</small>
-        <b>{indicators.glucose}</b>
-      </div>
-      <div className={`health-chip ${patient.smoke === 1 ? 'attn' : ''}`}>
-        <small>Smoking</small>
-        <b>{indicators.smoking}</b>
-      </div>
-      <div className="health-chip">
-        <small>Physical Activity</small>
-        <b>{patient.active === 1 ? 'Yes' : 'No'}</b>
-      </div>
-    </div>
-  );
-}
+  // Staged assessment result buffer
+  const pendingResultRef = useRef(null);
 
-function Sparkline({ data }) {
-  if (data.length < 2) return <svg className="sparkline"></svg>;
-  const min = Math.min(...data);
-  const max = Math.max(...data);
-  const range = max - min || 1;
-  const stepX = 100 / (data.length - 1);
-  const points = data.map((v, i) => `${i * stepX},${30 - ((v - min) / range * 30)}`).join(' ');
-  
-  return (
-    <svg className="sparkline" viewBox="0 -5 100 40" preserveAspectRatio="none">
-      <polyline points={points} />
-    </svg>
-  );
-}
-
-function App() {
-  const [patientsList, setPatientsList] = useState([DEMO_PATIENT]);
-  const [patient, setPatient] = useState(DEMO_PATIENT);
-  const [result, setResult] = useState();
-  
-  // What-If state
-  const [simPatient, setSimPatient] = useState(DEMO_PATIENT);
-  const [simResult, setSimResult] = useState();
-  
-  // Telemetry state
-  const [telemetry, setTelemetry] = useState();
-  const [hrHistory, setHrHistory] = useState([]);
-  
-  const [who, setWho] = useState();
-  const [modelInfo, setModelInfo] = useState();
-  const [loading, setLoading] = useState(false);
-
+  // Fetch initial cohort & initial assessment
   useEffect(() => {
-    fetch(API + '/api/patients').then(r => r.json()).then(data => {
-      if (data && data.length > 0) {
-        setPatientsList(data);
-        setPatient(data[0]);
-        setSimPatient(data[0]);
-      }
-    }).catch(e => console.error("Patients fetch failed", e));
-    
-    fetch(API + '/api/who/benchmark').then(r => r.json()).then(setWho).catch(() => {});
-    fetch(API + '/api/models').then(r => r.json()).then(setModelInfo).catch(() => {});
+    fetch(`${API}/api/patients`)
+      .then(r => r.json())
+      .then(data => {
+        if (Array.isArray(data) && data.length) {
+          setPatientsList(data);
+          setPatient(data[0]);
+          runDirectAssessment(data[0]);
+        } else {
+          runDirectAssessment(DEFAULT_PATIENT);
+        }
+      })
+      .catch(() => {
+        runDirectAssessment(DEFAULT_PATIENT);
+      });
+
+    fetch(`${API}/api/models`)
+      .then(r => r.json())
+      .then(setModelInfo)
+      .catch(() => {});
   }, []);
 
-  const assess = async (p) => {
-    setLoading(true);
+  // Direct assessment without full animation modal (for initial load / patient switch)
+  const runDirectAssessment = async (p) => {
     try {
-      let r = await fetch(API + '/api/assessment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p) });
-      let data = await r.json();
-      setResult(data);
-      setSimResult(null); // Clear previous simulation when base changes
-      setSimPatient(p); // Reset simulator to current baseline
-      
-      // Connect to websocket for the newly assessed patient
-      let ws = new WebSocket(`ws://localhost:8000/ws/patient/${p.patient_id}`);
-      ws.onmessage = e => {
-        const d = JSON.parse(e.data);
-        setTelemetry(d);
-        setHrHistory(prev => [...prev.slice(-19), d.heart_rate]); // keep last 20 points
-      };
-      return () => ws.close();
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    if (patient) assess(patient);
-  }, [patient.patient_id]); // Trigger assessment when patient ID changes
-
-  const handlePatientSelect = (e) => {
-    const selected = patientsList.find(p => p.patient_id === e.target.value);
-    if (selected) setPatient(selected);
-  };
-
-  const changeBase = (k, v) => setPatient(p => ({ ...p, [k]: Number(v) }));
-  const changeSim = (k, v) => setSimPatient(p => ({ ...p, [k]: Number(v) }));
-
-  const runWhatIf = async () => {
-    try {
-      let r = await fetch(API + '/api/what-if', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          baseline: patient, 
-          changes: Object.fromEntries(Object.entries(simPatient).filter(([k, v]) => patient[k] !== v && k !== 'patient_id')) 
-        })
+      const res = await fetch(`${API}/api/assessment`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(p)
       });
-      let d = await r.json();
-      setSimResult(d);
-    } catch (e) {
-      console.error(e);
+      if (res.ok) {
+        const data = await res.json();
+        setResult(data);
+        const now = new Date();
+        setAssessedTime(now.toLocaleTimeString('en-GB', { hour12: false }));
+        setAssessedDate(now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }));
+      }
+    } catch (err) {
+      console.error('Direct assessment error:', err);
     }
   };
 
-  // Compute what changed
-  const changedFactors = Object.keys(simPatient).filter(k => simPatient[k] !== patient[k] && k !== 'patient_id');
+  // Requirement 4 & 25: User-initiated Assessment with Analytical Sequence
+  const handleRunAssessmentClick = async () => {
+    setIsAssessing(true);
+
+    try {
+      const res = await fetch(`${API}/api/assessment`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patient)
+      });
+      if (res.ok) {
+        const data = await res.json();
+        pendingResultRef.current = data;
+      }
+    } catch (err) {
+      console.error('Assessment API error:', err);
+    }
+  };
+
+  const handleAssessmentSequenceComplete = () => {
+    setIsAssessing(false);
+    if (pendingResultRef.current) {
+      setResult(pendingResultRef.current);
+      pendingResultRef.current = null;
+      const now = new Date();
+      setAssessedTime(now.toLocaleTimeString('en-GB', { hour12: false }));
+      setAssessedDate(now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }));
+    }
+  };
+
+  const handleFieldChange = (field, val) => {
+    setPatient(prev => ({ ...prev, [field]: Number(val) }));
+  };
+
+  // Requirement 27: Controlled patient transition
+  const handleSelectPatient = (p) => {
+    setIsSwitchingPatient(true);
+    setTimeout(() => {
+      setPatient(p);
+      runDirectAssessment(p);
+      setTimeout(() => {
+        setIsSwitchingPatient(false);
+      }, 180);
+    }, 120);
+  };
+
+  const handleApplyWhatIfScenario = (simulatedPatient) => {
+    setPatient(simulatedPatient);
+    runDirectAssessment(simulatedPatient);
+  };
+
+  const handleNewPatientAssessed = (newPatient, assessmentData) => {
+    setPatientsList(prev => [newPatient, ...prev.filter(p => p.patient_id !== newPatient.patient_id)]);
+    setPatient(newPatient);
+    setResult(assessmentData);
+    const now = new Date();
+    setAssessedTime(now.toLocaleTimeString('en-GB', { hour12: false }));
+    setAssessedDate(now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }));
+  };
 
   return (
-    <main>
-      <header className="app-header">
-        <div className="title-area">
-          <p className="eyebrow">Cardiovascular Disease Risk Assessment</p>
-          <h1>Intelligent Clinical Decision Support</h1>
-        </div>
-        <span className="badge">Academic Prototype</span>
-      </header>
+    <div className="app-workstation-shell">
+      {/* ── TOP PRISTINE CLINICAL HEADER ── */}
+      <Header
+        activeNav={activeNav}
+        setActiveNav={setActiveNav}
+        patient={patient}
+        patientsList={patientsList}
+        onSelectPatient={handleSelectPatient}
+        assessedTime={assessedTime}
+        assessedDate={assessedDate}
+        onOpenPatientModal={() => setPatientModalOpen(true)}
+        onOpenAnalyticsModal={() => setModelModalOpen(true)}
+        onOpenGuidelinesModal={() => setGuidelinesModalOpen(true)}
+        onOpenNewPatientModal={() => setNewPatientOpen(true)}
+        onOpenModelTestingModal={() => setModelTestingOpen(true)}
+      />
 
-      <div className="clinical-grid">
-        {/* Left Sidebar (4 cols) */}
-        <aside className="col-4">
-          <div className="panel">
-            <h2>Patient Context</h2>
-            <select className="patient-select" value={patient.patient_id} onChange={handlePatientSelect}>
-              {patientsList.map(p => <option key={p.patient_id} value={p.patient_id}>Patient {p.patient_id}</option>)}
-            </select>
-            
-            <div className="patient-summary">
-              <div className="summary-item" style={{flex: 1}}>
-                <span>Age</span>
-                <b>{patient.age_years.toFixed(0)} yrs</b>
+      {/* ── SINGLE-SCREEN CLINICAL ANALYTICAL WORKSPACE (ZERO SCROLL) ── */}
+      <main className={`clinical-analytics-workspace ${isSwitchingPatient ? 'patient-transitioning' : ''}`} role="main">
+        {/* ════ LEFT COLUMN: PATIENT PROFILE & LARGE VISUAL PROFILE (Requirements 7, 8, 9, 26) ════ */}
+        <section className="workstation-column col-left" aria-label="Patient Profile and Clinical Controls">
+          <div className="clinical-card-panel panel-patient">
+            {/* Header with Patient Selector */}
+            <div className="panel-header-bar">
+              <div className="panel-title-group">
+                <span className="panel-main-title">Patient Profile</span>
+                <span className="panel-sub-title">Demographic & Intake State</span>
               </div>
-              <div className="summary-item" style={{flex: 1}}>
-                <span>Sex</span>
-                <b>{patient.gender === 1 ? 'Female' : 'Male'}</b>
-              </div>
-              <div className="summary-item" style={{flex: 1}}>
-                <span>Source</span>
-                <b>Clinical Records</b>
+              <div className="panel-header-controls-group">
+                <select
+                  className="patient-quick-dropdown"
+                  value={patient.patient_id}
+                  onChange={e => {
+                    const p = patientsList.find(item => item.patient_id === e.target.value);
+                    if (p) handleSelectPatient(p);
+                  }}
+                >
+                  {patientsList.map(p => (
+                    <option key={p.patient_id} value={p.patient_id}>
+                      Patient {p.patient_id}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="btn-quick-new-patient"
+                  onClick={() => setNewPatientOpen(true)}
+                  id="btn-quick-new-patient"
+                  title="Add new patient record and run clinical assessment"
+                >
+                  + New
+                </button>
               </div>
             </div>
 
-            <div className="form-grid" style={{marginTop: '16px'}}>
-              <label>Weight (kg)<input type="number" value={patient.weight} onChange={e => changeBase('weight', e.target.value)} /></label>
-              <label>Height (cm)<input type="number" value={patient.height} onChange={e => changeBase('height', e.target.value)} /></label>
-              
-              <label className="full">Systolic BP<input type="number" value={patient.ap_hi} onChange={e => changeBase('ap_hi', e.target.value)} /></label>
-              <label className="full">Diastolic BP<input type="number" value={patient.ap_lo} onChange={e => changeBase('ap_lo', e.target.value)} /></label>
-              
-              <label className="full">Cholesterol
-                <select value={patient.cholesterol} onChange={e => changeBase('cholesterol', e.target.value)}>
-                  <option value="1">Normal</option><option value="2">Above normal</option><option value="3">High</option>
-                </select>
-              </label>
-              
-              <label className="full">Glucose
-                <select value={patient.gluc} onChange={e => changeBase('gluc', e.target.value)}>
-                  <option value="1">Normal</option><option value="2">Above normal</option><option value="3">High</option>
-                </select>
-              </label>
-              
-              <label className="check"><input type="checkbox" checked={!!patient.smoke} onChange={e => changeBase('smoke', +e.target.checked)} /> Smoker</label>
-              <label className="check"><input type="checkbox" checked={!!patient.active} onChange={e => changeBase('active', +e.target.checked)} /> Active</label>
+            {/* Major Visual Anchor: Segmented Radial Cardiovascular Health Profile (Requirements 7, 8, 9) */}
+            <div className="panel-radial-profile-section">
+              <RadialCardiovascularProfile
+                patient={patient}
+                activeHoverFactor={activeHoverFactor}
+                onHoverFactor={setActiveHoverFactor}
+                selectedFactor={selectedFactor}
+                onSelectFactor={setSelectedFactor}
+              />
             </div>
-            
-            <button className="primary" onClick={() => assess(patient)} disabled={loading}>
-              {loading ? 'Processing...' : 'Run New Assessment'}
-            </button>
+
+            {/* Quick Modifiable Inputs Grid - Perfectly Aligned 6-Parameter System */}
+            <div className="panel-inputs-section">
+              <div className="section-mini-eyebrow">
+                <span>CLINICAL PARAMETERS</span>
+                <span className="eyebrow-hint">Editable Intake Values</span>
+              </div>
+
+              <div className="quick-inputs-grid">
+                {/* 1. Systolic BP */}
+                <div className={`quick-input-item ${activeHoverFactor === 'bp' ? 'cross-highlighted' : ''}`}>
+                  <div className="input-label-row">
+                    <span className="input-field-name">Systolic BP</span>
+                    <span className="input-unit-tag">mmHg</span>
+                  </div>
+                  <input
+                    type="number"
+                    value={patient.ap_hi}
+                    onChange={e => handleFieldChange('ap_hi', e.target.value)}
+                    title="Systolic Blood Pressure (mmHg)"
+                  />
+                </div>
+
+                {/* 2. Diastolic BP */}
+                <div className={`quick-input-item ${activeHoverFactor === 'bp' ? 'cross-highlighted' : ''}`}>
+                  <div className="input-label-row">
+                    <span className="input-field-name">Diastolic BP</span>
+                    <span className="input-unit-tag">mmHg</span>
+                  </div>
+                  <input
+                    type="number"
+                    value={patient.ap_lo}
+                    onChange={e => handleFieldChange('ap_lo', e.target.value)}
+                    title="Diastolic Blood Pressure (mmHg)"
+                  />
+                </div>
+
+                {/* 3. Weight */}
+                <div className={`quick-input-item ${activeHoverFactor === 'bmi' ? 'cross-highlighted' : ''}`}>
+                  <div className="input-label-row">
+                    <span className="input-field-name">Weight</span>
+                    <span className="input-unit-tag">kg</span>
+                  </div>
+                  <input
+                    type="number"
+                    value={patient.weight}
+                    onChange={e => handleFieldChange('weight', e.target.value)}
+                    title="Patient Weight (kg)"
+                  />
+                </div>
+
+                {/* 4. Height */}
+                <div className={`quick-input-item ${activeHoverFactor === 'bmi' ? 'cross-highlighted' : ''}`}>
+                  <div className="input-label-row">
+                    <span className="input-field-name">Height</span>
+                    <span className="input-unit-tag">cm</span>
+                  </div>
+                  <input
+                    type="number"
+                    value={patient.height}
+                    onChange={e => handleFieldChange('height', e.target.value)}
+                    title="Patient Height (cm)"
+                  />
+                </div>
+
+                {/* 5. Cholesterol */}
+                <div className={`quick-input-item ${activeHoverFactor === 'chol' ? 'cross-highlighted' : ''}`}>
+                  <div className="input-label-row">
+                    <span className="input-field-name">Cholesterol</span>
+                    <span className="input-unit-tag">Total</span>
+                  </div>
+                  <select
+                    value={patient.cholesterol}
+                    onChange={e => handleFieldChange('cholesterol', e.target.value)}
+                    title="Total Cholesterol Category"
+                  >
+                    <option value="1">1 - Normal</option>
+                    <option value="2">2 - Above</option>
+                    <option value="3">3 - High</option>
+                  </select>
+                </div>
+
+                {/* 6. Fasting Glucose */}
+                <div className={`quick-input-item ${activeHoverFactor === 'gluc' ? 'cross-highlighted' : ''}`}>
+                  <div className="input-label-row">
+                    <span className="input-field-name">Glucose</span>
+                    <span className="input-unit-tag">Fasting</span>
+                  </div>
+                  <select
+                    value={patient.gluc}
+                    onChange={e => handleFieldChange('gluc', e.target.value)}
+                    title="Fasting Glucose Category"
+                  >
+                    <option value="1">1 - Normal</option>
+                    <option value="2">2 - Above</option>
+                    <option value="3">3 - High</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Lifestyle Interactive Status Pills */}
+              <div className="lifestyle-section-block">
+                <div className="lifestyle-mini-label">LIFESTYLE FACTORS</div>
+                <div className="lifestyle-pills-row">
+                  <button
+                    type="button"
+                    className={`lifestyle-pill-toggle ${patient.smoke ? 'active red' : ''} ${activeHoverFactor === 'smoke' ? 'cross-highlighted' : ''}`}
+                    onClick={() => handleFieldChange('smoke', patient.smoke ? 0 : 1)}
+                    title="Toggle smoking status"
+                  >
+                    <span className="pill-icon">🚬</span>
+                    <span className="pill-txt">{patient.smoke ? 'Smoker' : 'Non-Smoker'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className={`lifestyle-pill-toggle ${patient.alco ? 'active amber' : ''} ${activeHoverFactor === 'alco' ? 'cross-highlighted' : ''}`}
+                    onClick={() => handleFieldChange('alco', patient.alco ? 0 : 1)}
+                    title="Toggle alcohol consumption"
+                  >
+                    <span className="pill-icon">🍷</span>
+                    <span className="pill-txt">{patient.alco ? 'Alcohol: Yes' : 'Alcohol: No'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className={`lifestyle-pill-toggle ${patient.active ? 'active green' : ''} ${activeHoverFactor === 'active' ? 'cross-highlighted' : ''}`}
+                    onClick={() => handleFieldChange('active', patient.active ? 0 : 1)}
+                    title="Toggle physical activity"
+                  >
+                    <span className="pill-icon">🏃</span>
+                    <span className="pill-txt">{patient.active ? 'Active' : 'Sedentary'}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Assessment Trigger Action Bar */}
+            <div className="panel-actions-section">
+              <button
+                className="btn-run-clinical-assessment"
+                onClick={handleRunAssessmentClick}
+                disabled={isAssessing}
+                id="btn-run-assessment"
+              >
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.2" className="btn-icon">
+                  <polygon points="5 3 19 12 5 21 5 3" />
+                </svg>
+                <span>{isAssessing ? 'Analysing Patient Data...' : 'Run Assessment'}</span>
+              </button>
+
+              <button
+                className="btn-reset-clinical"
+                onClick={() => {
+                  setPatient({ ...DEFAULT_PATIENT });
+                  runDirectAssessment(DEFAULT_PATIENT);
+                }}
+              >
+                Reset to Baseline
+              </button>
+            </div>
+          </div>
+        </section>
+
+        {/* ════ CENTER COLUMN: RISK GAUGE, SHAP DIVERGING, WHO POPULATION BENCHMARK ════ */}
+        <section className="workstation-column col-center" aria-label="Risk Prediction and Explainability">
+          {/* Top: Estimated Cardiovascular Risk Card */}
+          <div className="clinical-card-panel panel-risk-gauge">
+            <div className="panel-header-bar">
+              <div className="panel-title-group">
+                <span className="panel-main-title">Estimated Cardiovascular Risk</span>
+                <span className="panel-sub-title">Supervised Machine Learning Inference</span>
+              </div>
+            </div>
+
+            {/* Gauge centred, action buttons directly below */}
+            <div className="risk-gauge-centered-layout">
+              <div className="gauge-viewport-box">
+                <AuthenticClinicalGauge
+                  prediction={result?.prediction}
+                  isAssessing={isAssessing}
+                />
+              </div>
+
+              {/* Action buttons sit directly beneath the gauge */}
+              <div className="gauge-action-buttons-row">
+                <button
+                  className="btn-action-tool"
+                  onClick={() => setWhatIfOpen(true)}
+                  id="btn-whatif-trigger"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M18 20V10M12 20V4M6 20v-6" />
+                  </svg>
+                  <span>What-If Simulator</span>
+                </button>
+
+                <button
+                  className="btn-action-tool secondary"
+                  onClick={() => setModelModalOpen(true)}
+                  id="btn-model-trigger"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                  </svg>
+                  <span>Model Validation</span>
+                </button>
+
+                <button
+                  className="btn-model-testing"
+                  onClick={() => setModelTestingOpen(true)}
+                  id="btn-model-testing-trigger"
+                  title="Open Model Testing & Comparison — demonstration interface"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: 13, height: 13 }}>
+                    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+                  </svg>
+                  <span>Model Testing</span>
+                </button>
+              </div>
+            </div>
           </div>
 
-          <div className="panel" style={{marginTop: '16px'}}>
-            <h2>Simulated Live Telemetry</h2>
-            <div className="telemetry-status">
-              <div><span className="status-dot"></span> <b>Connected</b> (Update 3s)</div>
-              <span>ID: {patient.patient_id}</span>
-            </div>
-            
-            {telemetry ? (
-              <div className="telemetry-data">
-                <div>
-                  <div className="tel-val">{telemetry.systolic_bp} / {telemetry.diastolic_bp}</div>
-                  <div className="tel-label">Blood Pressure (mmHg)</div>
-                  
-                  <div className="tel-val" style={{marginTop: '8px'}}>{telemetry.heart_rate}</div>
-                  <div className="tel-label">Heart Rate (bpm)</div>
-                </div>
-                <div>
-                  <Sparkline data={hrHistory} />
-                  <div className="tel-label" style={{textAlign: 'right'}}>HR Trend</div>
+          {/* Bottom Split: SHAP Diverging + WHO Population Reference */}
+          <div className="center-split-row">
+            {/* Left: SHAP Diverging Contribution Visualization (Requirements 6, 11, 12, 26) */}
+            <div className="clinical-card-panel panel-shap">
+              <div className="panel-header-bar compact">
+                <div className="panel-title-group">
+                  <span className="panel-main-title">Why is the Risk Elevated?</span>
+                  <span className="panel-sub-title">SHAP Factor Contribution Analysis</span>
                 </div>
               </div>
-            ) : (
-              <p className="sub">Awaiting telemetry frames...</p>
-            )}
+              <div className="panel-inner-body">
+                <ShapDivergingChart
+                  explanation={result?.explanation}
+                  activeHoverFactor={activeHoverFactor}
+                  onHoverFactor={setActiveHoverFactor}
+                />
+              </div>
+            </div>
+
+            {/* Right: WHO Population Reference Dumbbell Visualization (Requirements 13, 14, 15) */}
+            <div className="clinical-card-panel panel-benchmark">
+              <div className="panel-header-bar compact">
+                <div className="panel-title-group">
+                  <span className="panel-main-title">WHO Population Reference</span>
+                  <span className="panel-sub-title">Global Health Observatory (GHO) Telemetry</span>
+                </div>
+              </div>
+              <div className="panel-inner-body">
+                <BenchmarkDumbbellChart patient={patient} />
+              </div>
+            </div>
           </div>
-        </aside>
+        </section>
 
-        {/* Main Content (8 cols) */}
-        <div className="col-8">
-          {result && (
-            <div className="clinical-grid">
-              
-              <div className="col-12 panel">
-                <h2>Primary Risk Assessment</h2>
-                <Gauge score={result.prediction.risk_score} category={result.prediction.risk_category} model_used={result.prediction.model_used} />
+        {/* ════ RIGHT COLUMN: HEALTH INDICATORS & LIVE TELEMETRY ════ */}
+        <section className="workstation-column col-right" aria-label="Health Indicators and Live Telemetry">
+          {/* Top: Compact Health Bullet Indicators (Requirements 8, 23, 26) */}
+          <div className="clinical-card-panel panel-bullet-indicators">
+            <div className="panel-header-bar compact">
+              <div className="panel-title-group">
+                <span className="panel-main-title">Health Indicators</span>
+                <span className="panel-sub-title">Clinical Range & Threshold Charts</span>
               </div>
-
-              <div className="col-6 panel">
-                <h2>Explainable Risk Drivers</h2>
-                <p className="sub" style={{marginBottom: '16px'}}>Method: {result.explanation.method}</p>
-                <ShapDivergingChart data={result.explanation} />
-              </div>
-
-              <div className="col-6 panel">
-                <h2>Cardiovascular Health Profile</h2>
-                <HealthProfile patient={patient} indicators={result.indicators} />
-              </div>
-
-              <div className="col-12 panel">
-                <h2>Projected Scenario (What-If Simulator)</h2>
-                <div className="clinical-grid" style={{gap: '24px'}}>
-                  <div className="col-5">
-                    <p className="sub" style={{marginBottom: '12px'}}>Adjust modifiable factors below:</p>
-                    <div className="sim-controls">
-                      <label>Systolic BP <input type="number" value={simPatient.ap_hi} onChange={e => changeSim('ap_hi', e.target.value)} /></label>
-                      <label>Weight (kg) <input type="number" value={simPatient.weight} onChange={e => changeSim('weight', e.target.value)} /></label>
-                      <label>Cholesterol 
-                        <select value={simPatient.cholesterol} onChange={e => changeSim('cholesterol', e.target.value)} style={{width: '90px'}}>
-                          <option value="1">Normal</option><option value="2">Above</option><option value="3">High</option>
-                        </select>
-                      </label>
-                      <label>Active 
-                        <select value={simPatient.active} onChange={e => changeSim('active', e.target.value)} style={{width: '90px'}}>
-                          <option value="1">Yes</option><option value="0">No</option>
-                        </select>
-                      </label>
-                    </div>
-                    <button className="primary" onClick={runWhatIf} disabled={changedFactors.length === 0}>
-                      Recalculate Projected Risk
-                    </button>
-                  </div>
-                  
-                  <div className="col-7">
-                    <div className="sim-comparison">
-                      <div className="sim-box">
-                        <span>Current Assessed</span>
-                        <b>{result.prediction.risk_score.toFixed(1)}%</b>
-                      </div>
-                      <div style={{color: '#94A6B8'}}>→</div>
-                      <div className="sim-box">
-                        <span>Projected</span>
-                        <b>{simResult ? simResult.simulated.risk_score.toFixed(1) : '-'}%</b>
-                      </div>
-                      
-                      {simResult && (
-                        <div style={{gridColumn: '1 / -1', marginTop: '8px'}}>
-                          <div className={`sim-diff ${simResult.difference_points > 0 ? 'inc' : simResult.difference_points < 0 ? 'dec' : ''}`}>
-                            {simResult.difference_points > 0 ? '+' : ''}{simResult.difference_points.toFixed(1)} percentage points
-                          </div>
-                          <div className="changed-factors">
-                            Changed: {changedFactors.join(', ')}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="col-12 panel">
-                <h2>Population Context & Evaluation</h2>
-                <div className="clinical-grid">
-                  <div className="col-6">
-                    <div className="muted-box">
-                      <strong>WHO GHO Benchmark:</strong>
-                      <br />
-                      {who?.message || 'Status unavailable'}
-                    </div>
-                  </div>
-                  <div className="col-6">
-                    <div className="muted-box">
-                      <details>
-                        <summary style={{cursor: 'pointer', fontWeight: 600}}>Model Evaluation (ROC-AUC)</summary>
-                        <div style={{marginTop: '8px', display: 'grid', gap: '4px'}}>
-                          {modelInfo?.metrics.map(m => (
-                            <div key={m.model} style={{display: 'flex', justifyContent: 'space-between'}}>
-                              <span>{m.model}</span>
-                              <strong>{(m.roc_auc * 100).toFixed(1)}%</strong>
-                            </div>
-                          ))}
-                          <small style={{marginTop: '8px'}}>Selected via highest hold-out ROC-AUC.</small>
-                        </div>
-                      </details>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              
+              <span className="panel-badge-pill">6 Biomarkers</span>
             </div>
-          )}
+            <div className="panel-inner-body bullet-body">
+              <HealthBulletIndicators
+                patient={patient}
+                activeHoverFactor={activeHoverFactor}
+                onHoverFactor={setActiveHoverFactor}
+                onSelectIndicator={(factorId) => setSelectedIndicator(factorId)}
+              />
+            </div>
+          </div>
+
+          {/* Bottom: Simulated Live Telemetry (Requirements 10, 24, 34 - Isolated WebSocket) */}
+          <div className="clinical-card-panel panel-telemetry">
+            <LiveTelemetryStream
+              patientId={patient.patient_id}
+            />
+          </div>
+        </section>
+      </main>
+
+      {/* ── BOTTOM ASSESSMENT SUMMARY BAR ── */}
+      <footer className="workstation-bottom-bar" role="contentinfo">
+        <div className="bottom-summary-left">
+          <div className="summary-clipboard-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+              <rect x="8" y="2" width="8" height="4" rx="1" ry="1" />
+            </svg>
+          </div>
+          <div className="summary-title-col">
+            <span className="summary-main-lbl">Latest Assessment Summary</span>
+            <span className="summary-sub-lbl">Patient {patient.patient_id} • Cohort Active</span>
+          </div>
+
+          <div className="summary-metrics-strip">
+            <div className="summary-stat-cell">
+              <span className="stat-label">Estimated Risk</span>
+              <strong className={`stat-val ${result?.prediction?.risk_score >= 65 ? 'red' : result?.prediction?.risk_score >= 35 ? 'amber' : 'green'}`}>
+                {result?.prediction?.risk_score != null ? `${result.prediction.risk_score.toFixed(1)}%` : '82.8%'}
+              </strong>
+            </div>
+            <div className="summary-stat-cell">
+              <span className="stat-label">Risk Category</span>
+              <strong className={`stat-val ${result?.prediction?.risk_category === 'High' ? 'red' : result?.prediction?.risk_category === 'Moderate' ? 'amber' : 'green'}`}>
+                {result?.prediction?.risk_category ?? 'High'}
+              </strong>
+            </div>
+            <div className="summary-stat-cell">
+              <span className="stat-label">Assessment Status</span>
+              <span className="stat-val green">Complete</span>
+            </div>
+            <div className="summary-stat-cell">
+              <span className="stat-label">Assessed At</span>
+              <span className="stat-time-val">{assessedTime} • {assessedDate}</span>
+            </div>
+          </div>
         </div>
-      </div>
-    </main>
+
+        <div className="bottom-summary-right">
+          <div className="summary-motto-pulse">
+            <svg viewBox="0 0 48 16" fill="none" stroke="currentColor" strokeWidth="1.8">
+              <polyline points="0,8 12,8 16,2 20,14 24,5 28,10 32,8 48,8" />
+            </svg>
+          </div>
+          <span className="summary-motto-text">
+            CardioRisk Analytics • Intelligent Clinical Decision Support
+          </span>
+        </div>
+      </footer>
+
+      {/* ── MODALS ── */}
+      {/* 1. What-If Risk Simulator Modal (Requirements 16-21) */}
+      <WhatIfSimulatorModal
+        open={whatIfOpen}
+        onClose={() => setWhatIfOpen(false)}
+        patient={patient}
+        baseResult={result}
+        activeHoverFactor={activeHoverFactor}
+        onApplyChanges={handleApplyWhatIfScenario}
+      />
+
+      {/* 2. Model Analytics & Validation Modal (Requirements 17 & 18) */}
+      <ModelAnalyticsModal
+        open={modelModalOpen}
+        onClose={() => setModelModalOpen(false)}
+        modelInfo={modelInfo}
+      />
+
+      {/* 3a. Model Testing & Comparison — Demonstration Interface */}
+      {/* This is SEPARATE from production XGBoost. Each model tested independently. */}
+      <ModelTestingModal
+        open={modelTestingOpen}
+        onClose={() => setModelTestingOpen(false)}
+        patient={patient}
+      />
+
+      {/* 3. Patient Record Dossier Modal */}
+      <PatientRecordModal
+        open={patientModalOpen}
+        onClose={() => setPatientModalOpen(false)}
+        patient={patient}
+        patientsList={patientsList}
+        onSelectPatient={handleSelectPatient}
+      />
+
+      {/* 4. Clinical Guidelines Modal */}
+      <ClinicalGuidelinesModal
+        open={guidelinesModalOpen}
+        onClose={() => setGuidelinesModalOpen(false)}
+      />
+
+      {/* 5. Patient Assessment Lifecycle Animation Sequence (Requirements 4, 25) */}
+      <AssessmentSequenceModal
+        active={isAssessing}
+        onComplete={handleAssessmentSequenceComplete}
+      />
+
+      {/* 6. New Patient Intake & Assessment Modal (Requirement 2) */}
+      <NewPatientModal
+        open={newPatientOpen}
+        onClose={() => setNewPatientOpen(false)}
+        onPatientAssessed={handleNewPatientAssessed}
+      />
+
+      {/* 7. Health Indicator Detailed Visualization Modal */}
+      <HealthIndicatorDetailModal
+        indicatorId={selectedIndicator}
+        open={Boolean(selectedIndicator)}
+        onClose={() => setSelectedIndicator(null)}
+        patient={patient}
+        result={result}
+        onOpenWhatIf={(factorId) => {
+          setSelectedIndicator(null);
+          setActiveHoverFactor(factorId);
+          setWhatIfOpen(true);
+        }}
+        onSelectIndicator={(factorId) => setSelectedIndicator(factorId)}
+      />
+    </div>
   );
 }
 
